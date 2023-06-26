@@ -140,7 +140,7 @@ bool InjectDLL( const TCHAR* szProcess, const TCHAR* szPath, LAUNCH_METHOD metho
 
 int main( )
 {
-	bool bRet{ InjectDLL( PROCESS_NAME, DLL_PATH, LM_NtCreateThreadEx ) };
+	bool bRet{ InjectDLL( PROCESS_NAME, DLL_PATH, LM_QueueUserAPC ) };
 
 	if ( !bRet )
 	{

@@ -591,12 +591,12 @@ DWORD SR_SetWindowsHookEx( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, 
 
             0xFF, 0x53, 0x04,               // + 0x22               -> call [ebx + 0x04]        ;call target function
 
-            0x89, 0x03,                     // + 0x25               -> mov [ebx], eax           ;store returned value
+            0x89, 0x03,                     // + 0x25               -> mov [ebx], eax           ;store returned value(loaded dll's address) at pShellCode_start
 
             0x5B,                           // + 0x27               -> pop ebx                  ;restore old ebx
             0x58,                           // + 0x28               -> pop eax                  ;restore eax (CallNextHookEx retval)
             0x5D,                           // + 0x29               -> pop ebp                  ;restore ebp
-            0xC2, 0x0C, 0x00                // + 0x2A               -> ret 0x000C               ;return
+            0xC2, 0x0C, 0x00                // + 0x2A               -> ret 0x000C               ;return and pop 0xC bytes off of the stack
     }; // SIZE = 0x3D (+ 0x08)
 
     DWORD codeOffset{ 0x08 };
@@ -612,6 +612,7 @@ DWORD SR_SetWindowsHookEx( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, 
 
 #endif
 
+    // Write ShellCode in the target process
     if ( !WriteProcessMemory( hTargetProc, pCodeCave, ShellCode, sizeof( ShellCode ), nullptr ))
     {
         lastWin32Error = GetLastError( );
@@ -621,36 +622,49 @@ DWORD SR_SetWindowsHookEx( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, 
     }
 
     static EnumWindowsCallback_Data data;
-  //  data.m_hookData.clear( );
 
+    data.m_hookData.clear( );
     data.m_pHook = reinterpret_cast<HOOKPROC>(reinterpret_cast<BYTE*>(pCodeCave) + codeOffset);
+    // Makes ShellCode + codeOffset a CALLBACK function
     data.m_PID = GetProcessId( hTargetProc );
     data.m_hModule = GetModuleHandle( TEXT( "user32.dll" ) );
 
-    WNDENUMPROC EnumWindowsCallback = []( HWND hWnd, LPARAM )->BOOL
+    WNDENUMPROC EnumWindowsCallback
     {
-        DWORD winPID{ 0 };
-        DWORD winTID{ GetWindowThreadProcessId( hWnd, &winPID ) };
+         []( HWND hWnd, LPARAM )->BOOL
+         {
+             DWORD winPID{ 0 };
+             DWORD winTID{ GetWindowThreadProcessId( hWnd, &winPID ) };
+             // Retrieves the identifier of the thread that created the specified window and, optionally, the identifier of the process that created the window.
+             // If the function succeeds, the return value is the identifier of the thread that created the window
+             
+             if ( winPID == data.m_PID )
+             {
+                 TCHAR szWindow[MAX_PATH]{ 0 };
+                 if ( IsWindowVisible( hWnd ) && GetWindowText( hWnd, szWindow, MAX_PATH ) )
+                     // IsWindowVisible --> Determines the visibility state of the specified window.
+                     // GetWindowText --> Copies the text of the specified window's title bar (if it has one) into a buffer.
+                 {
+                     // SetWindowsHookEx doesen't work on Console windows
+                     // Check to not attach to console windows
+                     if ( GetClassName( hWnd, szWindow, MAX_PATH ) && _tcscmp( szWindow, TEXT( "ConsoleWindowClass" ) ) )
+                         // GetClassName --> Retrieves the name of the class to which the specified window belongs.
+                     {
+                         HHOOK hHook{ SetWindowsHookEx( WH_CALLWNDPROC, data.m_pHook, data.m_hModule, winTID ) };
+                         // 1st parameter(idHook) -> The type of hook procedure to be installed.
+                         // 2nd parameter(lpfn) -> A pointer to the hook procedure.
+                         // 3rd parameter(hMod) -> A handle to the DLL containing the hook procedure pointed to by the lpfn parameter.
+                         // 4th parameter(dwThreadId) -> The identifier of the thread with which the hook procedure is to be associated.
+                         if ( hHook )
+                         {
+                             data.m_hookData.push_back( { hHook, hWnd } );
+                         }
+                     }
+                 }
+             }
 
-        if ( winPID == data.m_PID )
-        {
-            TCHAR szWindow[MAX_PATH]{ 0 };
-            if ( IsWindowVisible( hWnd ) && GetWindowText( hWnd, szWindow, MAX_PATH ) )
-            {
-                // SetWindowsHookEx doesen't work on Console windows
-                // Check to not attach to console windows
-                if ( GetClassName( hWnd, szWindow, MAX_PATH ) && _tcscmp( szWindow, TEXT( "ConsoleWindowClass" ) ) )
-                {
-                    HHOOK hHook{ SetWindowsHookEx( WH_CALLWNDPROC, data.m_pHook, data.m_hModule, winTID ) };
-                    if ( hHook )
-                    {
-                        data.m_hookData.push_back( { hHook, hWnd } );
-                    }
-                }
-            }
-        }
-
-        return TRUE;
+                return TRUE;
+         }
     };
 
     if ( !EnumWindows( EnumWindowsCallback, reinterpret_cast<LPARAM>(&data) ) )
@@ -669,14 +683,17 @@ DWORD SR_SetWindowsHookEx( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, 
     }
 
     HWND hForegroundWnd{ GetForegroundWindow( ) };
+    // Retrieves a handle to the foreground window (the window with which the user is currently working)
 
     for ( auto i : data.m_hookData )
     {
         SetForegroundWindow( i.m_hWnd );
+        // Brings the thread that created the specified window(i.e. i.m_hWnd) into the foreground and activates the window
         SendMessage( i.m_hWnd, WM_KEYDOWN, VK_SPACE, 0 );
         Sleep( 10 );
-        SendMessageA( i.m_hWnd, WM_IME_KEYUP, VK_SPACE, 0 );
+        SendMessage( i.m_hWnd, WM_IME_KEYUP, VK_SPACE, 0 );
         UnhookWindowsHookEx( i.m_hHook );
+        // Removes a hook procedure installed in a hook chain by the SetWindowsHookEx function.
     }
 
     SetForegroundWindow( hForegroundWnd );
@@ -704,8 +721,8 @@ DWORD SR_SetWindowsHookEx( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, 
 
 DWORD SR_QueueUserAPC( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, DWORD& lastWin32Error, UINT_PTR& remoteRet )
 {
-    void* pCodeCave{ VirtualAllocEx( hTargetProc, nullptr, 0x100, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE ) };
-    if ( !pCodeCave )
+    void* pMem{ VirtualAllocEx( hTargetProc, nullptr, 0x100, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE ) };
+    if ( !pMem )
     {
         lastWin32Error = GetLastError( );
         return SR_QUAPC_ERR_CANT_ALLOC_MEM;
@@ -719,7 +736,8 @@ DWORD SR_QueueUserAPC( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, DWOR
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,     // - 0x10   -> pArg                                     ;buffer to store argument
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,     // - 0x08   -> pRoutine                                 ;buffer to store pointer to the rouinte to call
 
-            0xEB, 0x00,                                        // + 0x00   -> jmp $+0x02                              ;jump to the next instruction
+            0xEB, 0x00,                                        // + 0x00   -> jmp 0x02                              ;jump to the next instruction
+                                                               // After patching will become: jmp 0x28
 
             0x48, 0x8B, 0x41, 0x10,                             // + 0x02   -> mov rax, [rcx + 0x10]                    ;move pRoutine into rax
             0x48, 0x8B, 0x49, 0x08,                             // + 0x06   -> mov rcx, [rcx + 0x08]                    ;move pArg into rcx
@@ -729,12 +747,15 @@ DWORD SR_QueueUserAPC( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, DWOR
             0x48, 0x83, 0xC4, 0x28,                             // + 0x10   -> add rsp, 0x28                            ;update stack
 
             0x48, 0x85, 0xC0,                                   // + 0x14   -> test rax, rax                            ;check if rax indicates success/failure
-            0x74, 0x11,                                        // + 0x17   -> je pCodecave + 0x2A                       ;jmp to ret if routine failed
+            0x74, 0x11,                                        // + 0x17   -> je pCodecave + 0x2A                       ;jmp to ret if routine failed i.e. if rax == 0
 
-            0x48, 0x8D, 0x0D, 0xC8, 0xFF, 0xFF, 0xFF,           // + 0x19   -> lea rcx, [pCodecave]                     ;load pointer to codecave into rcx
-            0x48, 0x89, 0x01,                                   // + 0x20   -> mov [rcx], rax                           ;store returned value
+            0x48, 0x8D, 0x0D, 0xC8, 0xFF, 0xFF, 0xFF,           // + 0x19   -> lea rcx, [pShellcode_start]              ;load pShellcode_start into rcx
+                                                                //             lea rcx, [rip - 0x38]
+
+            0x48, 0x89, 0x01,                                   // + 0x20   -> mov [rcx], rax                           ;store returned value at Shellcode_start
 
             0xC6, 0x05, 0xD7, 0xFF, 0xFF, 0xFF, 0x28,           // + 0x23   -> mov byte ptr[pCodecave + 0x18], 0x28     ;hot patch jump to skip shellcode
+                                                                // mov byte ptr [rip - 0x29], 0x28
 
             0xC3                                                // + 0x2A   -> ret                                      ;return
     }; // SIZE = 0x2B (+ 0x10)
@@ -755,16 +776,18 @@ DWORD SR_QueueUserAPC( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, DWOR
             0x55,                   // + 0x00   -> push ebp                         ;x86 stack frame creation
             0x8B, 0xEC,             // + 0x01   -> mov ebp, esp
 
-            0xEB, 0x00,             // + 0x03   -> jmp pCodecave + 0x05 (+ 0x0C)    ;jump to next instruction
+            0xEB, 0x00,             // + 0x03   -> jmp 2                            ;jump to next instruction
+                                                // After patching will become: jmp 0x28
 
             0x53,                   // + 0x05   -> push ebx                         ;save ebx
-            0x8B, 0x5D, 0x08,       // + 0x06   -> mov ebx, [ebp + 0x08]            ;move pCodecave into ebx (non volatile)
+            0x8B, 0x5D, 0x08,       // + 0x06   -> mov ebx, [ebp + 0x08]            ;move pShellcode_start into ebx (non volatile)
 
             0xFF, 0x73, 0x04,       // + 0x09   -> push [ebx + 0x04]                ;push pArg on stack
             0xFF, 0x53, 0x08,       // + 0x0C   -> call dword ptr[ebx + 0x08]       ;call pRoutine
 
             0x85, 0xC0,             // + 0x0F   -> test eax, eax                    ;check if eax indicates success/failure
             0x74, 0x06,             // + 0x11   -> je pCodecave + 0x19 (+ 0x0C)     ;jmp to cleanup if routine failed
+                                    //             je 8
 
             0x89, 0x03,             // + 0x13   -> mov [ebx], eax                   ;store returned value
             0xC6, 0x43, 0x10, 0x15, // + 0x15   -> mov byte ptr [ebx + 0x10], 0x15  ;hot patch jump to skip shellcode
@@ -782,11 +805,11 @@ DWORD SR_QueueUserAPC( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, DWOR
 
 #endif // _WIN64
 
-    BOOL bRet{ WriteProcessMemory( hTargetProc, pCodeCave, ShellCode, sizeof( ShellCode ), nullptr ) };
+    BOOL bRet{ WriteProcessMemory( hTargetProc, pMem, ShellCode, sizeof( ShellCode ), nullptr ) };
     if ( !bRet )
     {
         lastWin32Error = GetLastError( );
-        VirtualFreeEx( hTargetProc, pCodeCave, 0, MEM_RELEASE );
+        VirtualFreeEx( hTargetProc, pMem, 0, MEM_RELEASE );
 
         return SR_QUAPC_ERR_WPM_FAIL;
     }
@@ -795,14 +818,14 @@ DWORD SR_QueueUserAPC( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, DWOR
     if ( hSnap == INVALID_HANDLE_VALUE )
     {
         lastWin32Error = GetLastError( );
-        VirtualFreeEx( hTargetProc, pCodeCave, 0, MEM_RELEASE );
+        VirtualFreeEx( hTargetProc, pMem, 0, MEM_RELEASE );
 
         return SR_QUAPC_ERR_TH32_FAIL;
     }
 
     DWORD targetPID{ GetProcessId( hTargetProc ) };
     bool APCQueued{ false };
-    PAPCFUNC pShellCode{ reinterpret_cast<PAPCFUNC>(reinterpret_cast<BYTE*>(pCodeCave) + codeOffset) };
+    PAPCFUNC pShellCode{ reinterpret_cast<PAPCFUNC>(reinterpret_cast<BYTE*>(pMem) + codeOffset) };
 
     THREADENTRY32 TE32{};
     TE32.dwSize = sizeof( TE32 );
@@ -812,7 +835,7 @@ DWORD SR_QueueUserAPC( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, DWOR
     {
         lastWin32Error = GetLastError( );
         CloseHandle( hSnap );
-        VirtualFreeEx( hTargetProc, pCodeCave, 0, MEM_RELEASE );
+        VirtualFreeEx( hTargetProc, pMem, 0, MEM_RELEASE );
 
         return SR_QUAPC_ERR_T32FIRST_FAIL;
     }
@@ -821,10 +844,13 @@ DWORD SR_QueueUserAPC( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, DWOR
     {
         if ( TE32.th32OwnerProcessID == targetPID )
         {
+            // Open any thread of the target process
             HANDLE hThread{ OpenThread( THREAD_SET_CONTEXT, FALSE, TE32.th32ThreadID ) };
             if ( hThread )
             {
-                if ( QueueUserAPC( pShellCode, hThread, reinterpret_cast<ULONG_PTR>(pCodeCave) ) )
+                // Queue Shellcode as a APC funtion object (CALLBACK function) to to the APC queue of the specified thread.
+                // APC function(pRoutine) will be called when the specified thread(hThread performs an alertable wait operation.
+                if ( QueueUserAPC( pShellCode, hThread, reinterpret_cast<ULONG_PTR>(pMem) ) )
                     APCQueued = true;
                
                 else
@@ -842,7 +868,7 @@ DWORD SR_QueueUserAPC( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, DWOR
 
     if ( !APCQueued )
     {
-        VirtualFreeEx( hTargetProc, pCodeCave, 0, MEM_RELEASE );
+        VirtualFreeEx( hTargetProc, pMem, 0, MEM_RELEASE );
 
         return SR_QUAPC_ERR_NO_APC_THREAD;
     }
@@ -856,7 +882,7 @@ DWORD SR_QueueUserAPC( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, DWOR
 
     do
     {
-        ReadProcessMemory( hTargetProc, pCodeCave, &remoteRet, sizeof( remoteRet ), nullptr );
+        ReadProcessMemory( hTargetProc, pMem, &remoteRet, sizeof( remoteRet ), nullptr );
 
        if ( GetTickCount( ) - timer > SR_REMOTE_TIMEOUT )
             return SR_SWHEX_ERR_TIMEOUT;
