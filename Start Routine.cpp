@@ -845,17 +845,21 @@ DWORD SR_QueueUserAPC( HANDLE hTargetProc, f_Routine* pRoutine, void* pArg, DWOR
         if ( TE32.th32OwnerProcessID == targetPID )
         {
             // Open any thread of the target process
-            HANDLE hThread{ OpenThread( THREAD_SET_CONTEXT, FALSE, TE32.th32ThreadID ) };
+            HANDLE hThread{ OpenThread( THREAD_SET_CONTEXT | THREAD_ALL_ACCESS | SYNCHRONIZE, FALSE, TE32.th32ThreadID ) };
+            SuspendThread( hThread );
             if ( hThread )
             {
                 // Queue Shellcode as a APC funtion object (CALLBACK function) to to the APC queue of the specified thread.
                 // APC function(pRoutine) will be called when the specified thread(hThread performs an alertable wait operation.
                 if ( QueueUserAPC( pShellCode, hThread, reinterpret_cast<ULONG_PTR>(pMem) ) )
+                {
                     APCQueued = true;
+                }
                
                 else
                     lastWin32Error = GetLastError( );
 
+                ResumeThread( hThread );
                 CloseHandle( hThread );
             }
         }

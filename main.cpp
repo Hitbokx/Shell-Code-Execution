@@ -3,7 +3,7 @@
 #define DLL_PATH_X86 TEXT("E:\\DEV\\VS Projects\\testdll\\Debug\\testdll.dll")
 #define DLL_PATH_X64DLL_PATH_X64 TEXT("E:\\DEV\\VS Projects\\testdll\\Debug\\testdll.dll")
 
-#define PROCESS_NAME_X86 TEXT("notepad++.exe")
+#define PROCESS_NAME_X86 TEXT("calc.exe")
 #define PROCESS_NAME_X64 TEXT("notepad++.exe")
 
 #define LOAD_LIBRARY_NAME_A "LoadLibraryA"
